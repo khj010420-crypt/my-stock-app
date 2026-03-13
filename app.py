@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import FinanceDataReader as fdr  # 한국 주식 전용 라이브러리 추가
+import FinanceDataReader as fdr
 
 # 1. 페이지 설정
 st.set_page_config(page_title="Hysteresis Stock Intelligence", layout="wide")
@@ -16,45 +16,55 @@ st.markdown("""
 
 st.title("🏛️ Hysteresis 통합 주식 분석 대시보드")
 
-# 2. 데이터 로드: 한국 종목 리스트 완벽 수집 (FinanceDataReader 사용)
+# 2. 전 세계 모든 주식 리스트 통합 로드 (KRX + NASDAQ + S&P500)
 @st.cache_data(ttl=86400)
-def get_kr_stock_list():
+def get_all_stock_list():
     try:
-        # KRX (코스피, 코스닥) 전체 종목 가져오기
-        df = fdr.StockListing('KRX')
+        # 1. 한국 주식 (코스피, 코스닥)
+        df_kr = fdr.StockListing('KRX')
+        df_kr['Ticker'] = df_kr.apply(lambda r: f"{r['Code']}.KS" if r['Market']=='KOSPI' else f"{r['Code']}.KQ", axis=1)
+        master_dict = dict(zip(df_kr['Name'], df_kr['Ticker']))
         
-        # yfinance 검색을 위해 티커에 .KS(코스피), .KQ(코스닥) 붙이기
-        def make_ticker(row):
-            if row['Market'] == 'KOSPI': return f"{row['Code']}.KS"
-            elif row['Market'] == 'KOSDAQ': return f"{row['Code']}.KQ"
-            else: return f"{row['Code']}.KS"
-            
-        df['Ticker'] = df.apply(make_ticker, axis=1)
-        # 회사명과 티커를 딕셔너리 형태로 묶음
-        return dict(zip(df['Name'], df['Ticker']))
+        # 2. 미국 주식 (나스닥 전 종목)
+        df_ndaq = fdr.StockListing('NASDAQ')
+        # 미국 주식은 회사명이 영어이므로 헷갈리지 않게 뒤에 (US)를 붙임
+        df_ndaq['Name_US'] = df_ndaq['Name'] + " (NASDAQ)"
+        master_dict.update(dict(zip(df_ndaq['Name_US'], df_ndaq['Symbol'])))
+        
+        # 3. 미국 주식 (S&P 500 전 종목 - 뉴욕거래소 포함)
+        df_sp = fdr.StockListing('S&P500')
+        df_sp['Name_US'] = df_sp['Name'] + " (S&P500)"
+        master_dict.update(dict(zip(df_sp['Name_US'], df_sp['Symbol'])))
+
+        # 4. 편의를 위한 미국 대표 주식 '한글 이름' 수동 추가
+        custom_us_names = {
+            "애플": "AAPL", "테슬라": "TSLA", "엔비디아": "NVDA", "마이크로소프트": "MSFT",
+            "알파벳(구글)": "GOOGL", "아마존": "AMZN", "메타": "META", "넷플릭스": "NFLX",
+            "스타벅스": "SBUX", "코카콜라": "KO", "인텔": "INTC", "AMD": "AMD",
+            "TSMC": "TSM", "팔란티어": "PLTR", "아이온큐": "IONQ"
+        }
+        master_dict.update(custom_us_names)
+        
+        return master_dict
     except Exception as e:
-        st.error("종목 리스트를 불러오는데 실패했습니다.")
-        return {"삼성전자": "005930.KS"} 
+        return {"삼성전자": "005930.KS", "테슬라": "TSLA"} # 실패 시 기본값
 
-kr_stocks_dict = get_kr_stock_list()
+all_stocks_dict = get_all_stock_list()
 
-# 3. 데이터 로드: 시가총액 상위
+# 3. 데이터 로드: 시가총액 상위 (멀티인덱스 에러 원천 차단 방식 적용)
 KOSPI_TOP = {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "LG에너지솔루션": "373220.KS", "삼성바이오로직스": "207940.KS", "현대차": "005380.KS", "기아": "000270.KS", "셀트리온": "068270.KS", "POSCO홀딩스": "005490.KS", "NAVER": "035420.KS", "KB금융": "105560.KS"}
 NASDAQ_TOP = {"애플": "AAPL", "마이크로소프트": "MSFT", "엔비디아": "NVDA", "알파벳(구글)": "GOOGL", "아마존": "AMZN", "메타": "META", "테슬라": "TSLA", "브로드컴": "AVGO", "넷플릭스": "NFLX", "코스트코": "COST"}
 
 @st.cache_data(ttl=300)
 def get_market_ranking(market_dict):
-    tickers = list(market_dict.values())
-    hist = yf.download(tickers, period="5d", auto_adjust=True, progress=False)
-    close_prices = hist['Close'] if isinstance(hist.columns, pd.MultiIndex) else hist
-    
     data = []
+    # yfinance 일괄 다운로드 에러를 피하기 위해 개별 다운로드 처리 (훨씬 안정적임)
     for name, ticker in market_dict.items():
         try:
-            prices = close_prices[ticker].dropna()
-            if len(prices) >= 2:
-                current = float(prices.iloc[-1])
-                prev = float(prices.iloc[-2])
+            hist = yf.download(ticker, period="5d", auto_adjust=True, progress=False)
+            if not hist.empty and len(hist) >= 2:
+                current = float(hist['Close'].iloc[-1])
+                prev = float(hist['Close'].iloc[-2])
                 change_pct = ((current - prev) / prev) * 100
                 data.append({"종목명": name, "티커": ticker, "현재가": f"{current:,.2f}", "등락률(%)": round(change_pct, 2)})
         except:
@@ -72,23 +82,24 @@ with tab2:
 
 st.write("---")
 
-# --- UI 섹션 2: 만능 검색창 ---
+# --- UI 섹션 2: 만능 통합 검색창 ---
 st.subheader("🔍 정밀 분석 검색창")
-search_mode = st.radio("검색 방식 선택", ["📝 한국 주식 이름으로 검색 (자동완성)", "⌨️ 티커 직접 입력 (해외 주식 등)"], horizontal=True)
+search_mode = st.radio("검색 방식 선택", ["📝 회사 이름으로 검색 (한국 전 종목 + 미국 전 종목 지원)", "⌨️ 티커(Ticker) 직접 입력"], horizontal=True)
 
 search_name = None
 final_ticker = None
 
-# 모드 1: 한글 자동완성 (한국 2,700여개 + 나스닥 TOP 10)
 if "이름" in search_mode:
-    search_options = list(kr_stocks_dict.keys()) + list(NASDAQ_TOP.keys())
-    search_name = st.selectbox("종목명을 입력하세요", options=search_options, index=None, placeholder="예: 에코프로, 카카오, 애플...")
+    search_name = st.selectbox(
+        "한국 주식은 한글로, 미국 주식은 영어(예: Intel)로 검색해보세요. (유명 미국 주식은 한글 지원)", 
+        options=list(all_stocks_dict.keys()), 
+        index=None, 
+        placeholder="검색어를 입력하세요..."
+    )
     if search_name:
-        final_ticker = kr_stocks_dict.get(search_name) or NASDAQ_TOP.get(search_name)
-
-# 모드 2: 무제한 티커 입력 (해외 주식)
+        final_ticker = all_stocks_dict.get(search_name)
 else:
-    search_name = st.text_input("티커(Ticker)를 입력하고 엔터를 누르세요 (예: AMD, SOXL, 035720.KS)")
+    search_name = st.text_input("분석할 티커를 입력하세요 (예: SOXL, TQQQ, 035720.KS)")
     if search_name:
         final_ticker = search_name.upper()
 
@@ -98,7 +109,7 @@ if final_ticker:
         end_date = datetime.now().date()
         start_date = end_date - timedelta(days=365*5)
         
-        # 지수 판별
+        # 지수 판별 (한국은 코스피/코스닥, 미국은 나스닥 기준)
         if final_ticker.endswith(".KS"): market_index = "^KS11"
         elif final_ticker.endswith(".KQ"): market_index = "^KQ11"
         else: market_index = "^IXIC"
@@ -106,7 +117,7 @@ if final_ticker:
         stock_df = yf.download(final_ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
         market_df = yf.download(market_index, start=start_date, end=end_date, auto_adjust=True, progress=False)
         
-        if not stock_df.empty and len(stock_df) > 50: # 상장된지 최소 50일 이상된 종목만
+        if not stock_df.empty and len(stock_df) > 50:
             if isinstance(stock_df.columns, pd.MultiIndex): stock_df.columns = stock_df.columns.get_level_values(0)
             if isinstance(market_df.columns, pd.MultiIndex): market_df.columns = market_df.columns.get_level_values(0)
             stock_df.index = stock_df.index.tz_localize(None)
@@ -147,4 +158,4 @@ if final_ticker:
             else:
                 st.error("종목과 시장 지수의 날짜를 매칭할 수 없습니다.")
         else:
-            st.warning("데이터가 없거나 상장된 지 얼마 안 된 종목이라 5년치 통계 분석이 어렵습니다.")
+            st.warning("데이터가 없거나 상장된 지 얼마 안 된 종목이라 통계 분석이 불가능합니다.")
