@@ -31,7 +31,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🏛️ Hysteresis 통합 분석 대시보드")
+st.title("🏛️ Hysteresistock")
 
 # 4. 섹션 1: 주요 종목 실시간 전광판 (기존 기능 부활)
 st.subheader("🔥 시장 핫 종목 (클릭 시 즉시 분석)")
@@ -129,3 +129,4 @@ if final_ticker:
             else: st.info(f"{final_name}은(는) 현재 중립적인 흐름을 보이고 있습니다.")
         else:
             st.error("데이터를 로드할 수 없습니다. 티커를 확인하세요.")
+
