@@ -54,7 +54,7 @@ def get_market_ranking(market_dict):
             continue
     return pd.DataFrame(data)
 
-# --- [복구됨] UI 섹션 1: 시가총액 상위 전광판 ---
+# --- UI 섹션 1: 시가총액 상위 전광판 ---
 st.subheader("🏆 시가총액 상위 TOP 10 실시간 시세")
 tab1, tab2 = st.tabs(["🇰🇷 KOSPI 상위 10", "🇺🇸 NASDAQ 상위 10"])
 
@@ -84,7 +84,6 @@ if final_ticker:
         start_date = end_date - timedelta(days=365*5)
         market_index = "^KS11" if final_ticker.endswith(".KS") else "^KQ11" if final_ticker.endswith(".KQ") else "^IXIC"
         
-        # 데이터 로드 (고가, 저가, 거래량 포함)
         stock_df = yf.download(final_ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
         market_df = yf.download(market_index, start=start_date, end=end_date, auto_adjust=True, progress=False)
         
@@ -101,26 +100,25 @@ if final_ticker:
             ema_up, ema_down = up.ewm(com=13, adjust=False).mean(), down.ewm(com=13, adjust=False).mean()
             combined_df['RSI'] = 100 - (100 / (1 + (ema_up / ema_down)))
             
-            # 거래량 급증 팩터
             combined_df['Vol_MA20'] = combined_df['Volume'].rolling(20).mean()
             combined_df['Volume_Surge'] = combined_df['Volume'] > (combined_df['Vol_MA20'] * 1.5)
             
-            # ATR (변동성) 기반 비중 조절 팩터
             combined_df['H-L'] = combined_df['High'] - combined_df['Low']
             combined_df['H-C'] = np.abs(combined_df['High'] - combined_df['Close'].shift())
             combined_df['L-C'] = np.abs(combined_df['Low'] - combined_df['Close'].shift())
             combined_df['TR'] = combined_df[['H-L', 'H-C', 'L-C']].max(axis=1)
             combined_df['ATR'] = combined_df['TR'].rolling(14).mean()
             combined_df['ATR_pct'] = combined_df['ATR'] / combined_df['Close']
-            combined_df['Target_Weight'] = np.clip(0.02 / combined_df['ATR_pct'], 0, 1).fillna(0) # 1회 최대 리스크 2% 통제
+            combined_df['Target_Weight'] = np.clip(0.02 / combined_df['ATR_pct'], 0, 1).fillna(0)
+            
+            # [핵심 수정: 데이터를 쪼개기 전에 Target_Return과 RSI_round를 먼저 생성합니다]
+            combined_df['Target_Return'] = combined_df['Close'].shift(-5) / combined_df['Close'] - 1
+            combined_df['RSI_round'] = combined_df['RSI'].round()
 
             # [전진 분석 (Walk-Forward)]
             split_idx = int(len(combined_df) * 0.7)
             train_df = combined_df.iloc[:split_idx]
             test_df = combined_df.iloc[split_idx:]
-            
-            combined_df['Target_Return'] = combined_df['Close'].shift(-5) / combined_df['Close'] - 1
-            combined_df['RSI_round'] = combined_df['RSI'].round()
             
             train_win_map = train_df.groupby('RSI_round')['Target_Return'].apply(lambda x: (x > 0).mean()).to_dict()
             combined_df['Hist_Win_Rate'] = combined_df['RSI_round'].map(train_win_map).fillna(0.5)
@@ -130,13 +128,12 @@ if final_ticker:
             combined_df['Final_Score'] = np.clip(((combined_df['Hist_Win_Rate'] - 0.5) * 160) + combined_df['Market_Score'], -100, 100)
 
             # [매매 시뮬레이션 및 비용 차감]
-            # 조건: 최종 점수 30 이상 (확률적 우위) & 거래량 터졌을 때 매수
             combined_df['Target_Position'] = np.where((combined_df['Final_Score'] > 30) & combined_df['Volume_Surge'], combined_df['Target_Weight'], 0)
             combined_df['Position'] = combined_df['Target_Position'].shift(1).fillna(0)
             
             combined_df['Daily_Return'] = combined_df['Close'].pct_change()
             combined_df['Turnover'] = np.abs(combined_df['Position'] - combined_df['Position'].shift(1).fillna(0))
-            trading_cost = 0.002 # 매매 왕복 수수료 및 슬리피지 0.2% 현실 반영
+            trading_cost = 0.002 # 왕복 0.2% 차감
             
             combined_df['Strategy_Return'] = (combined_df['Position'] * combined_df['Daily_Return']) - (combined_df['Turnover'] * trading_cost)
             
@@ -145,7 +142,7 @@ if final_ticker:
 
             # --- 결과 시각화 ---
             st.markdown(f"## 📊 {search_name} 퀀트 시뮬레이션 결과")
-            st.caption("✔️ 다중 팩터(거래량 필터) 적용 / ✔️ 매매 1회당 0.2% 수수료 차감 / ✔️ ATR 기반 리스크 비중 통제 / ✔️ OOS 미래 검증")
+            st.caption("✔️ 다중 팩터(거래량) / ✔️ 1회당 0.2% 비용 차감 / ✔️ ATR 리스크 통제 / ✔️ OOS 검증")
             
             oos_start_date = test_df.index[0].strftime('%Y-%m-%d')
             final_bh = combined_df['Cum_BuyHold'].iloc[-1] - 100
