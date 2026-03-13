@@ -13,28 +13,34 @@ st.markdown("""<style>.stMetric { background-color: #1e2130; padding: 15px; bord
 st.title("🏛️ Hysteresis 프로 퀀트 터미널")
 st.caption("시가총액 상위 전광판 + 다중 팩터/비용 차감/전진 분석이 적용된 실무형 백테스트 엔진")
 
-# 2. 전 세계 리스트 로드 (검색용, 총 7,200여 개)
+# 2. [핵심 수정] 리스트 로드 에러 방어막 분리 (자동완성 증발 완벽 방지)
 @st.cache_data(ttl=86400)
 def get_all_stock_list():
     master_dict = {}
     
-    # 1. 한국 주식
-    df_kr = fdr.StockListing('KRX')
-    df_kr['Ticker'] = df_kr.apply(lambda r: f"{r['Code']}.KS" if r['Market']=='KOSPI' else f"{r['Code']}.KQ", axis=1)
-    master_dict.update(dict(zip(df_kr['Name'], df_kr['Ticker'])))
-    
-    # 2. 미국 나스닥
-    df_ndaq = fdr.StockListing('NASDAQ')
-    master_dict.update(dict(zip(df_ndaq['Name'] + " (NASDAQ)", df_ndaq['Symbol'])))
-    
-    # 3. 미국 S&P500 (누락되었던 부분 복구)
-    df_sp = fdr.StockListing('S&P500')
-    master_dict.update(dict(zip(df_sp['Name'] + " (S&P500)", df_sp['Symbol'])))
-    
-    # 4. 필수 한글 매핑
-    custom_us = {"애플":"AAPL", "테슬라":"TSLA", "엔비디아":"NVDA", "마이크로소프트":"MSFT", "알파벳(구글)":"GOOGL", "아마존":"AMZN", "메타":"META", "인텔":"INTC", "AMD":"AMD", "SOXL":"SOXL", "TQQQ":"TQQQ"}
+    # 필수 한글 매핑 (가장 먼저 안전하게 추가)
+    custom_us = {"삼성전자":"005930.KS", "SK하이닉스":"000660.KS", "애플":"AAPL", "테슬라":"TSLA", "엔비디아":"NVDA", "마이크로소프트":"MSFT", "알파벳(구글)":"GOOGL", "아마존":"AMZN", "메타":"META", "인텔":"INTC", "AMD":"AMD", "SOXL":"SOXL", "TQQQ":"TQQQ"}
     master_dict.update(custom_us)
     
+    # 1. 한국 주식 (여기서 에러나도 아래는 실행됨)
+    try:
+        df_kr = fdr.StockListing('KRX')
+        df_kr['Ticker'] = df_kr.apply(lambda r: f"{r['Code']}.KS" if r['Market']=='KOSPI' else f"{r['Code']}.KQ", axis=1)
+        master_dict.update(dict(zip(df_kr['Name'], df_kr['Ticker'])))
+    except: pass
+    
+    # 2. 미국 나스닥
+    try:
+        df_ndaq = fdr.StockListing('NASDAQ')
+        master_dict.update(dict(zip(df_ndaq['Name'] + " (NASDAQ)", df_ndaq['Symbol'])))
+    except: pass
+    
+    # 3. 미국 S&P500
+    try:
+        df_sp = fdr.StockListing('S&P500')
+        master_dict.update(dict(zip(df_sp['Name'] + " (S&P500)", df_sp['Symbol'])))
+    except: pass
+
     return master_dict
 
 all_stocks_dict = get_all_stock_list()
@@ -75,25 +81,24 @@ st.write("---")
 # --- UI 섹션 2: 만능 검색창 (디자인 롤백 완료) ---
 st.subheader("🔍 정밀 퀀트 분석 검색창")
 
-col_search, _ = st.columns([1, 1]) # 가로 폭을 절반으로 줄여 검색창 느낌 복구
-with col_search:
-    search_mode = st.radio("검색 방식 선택", ["📝 회사명 검색 (자동완성)", "⌨️ 티커 직접 입력"], horizontal=True)
+search_mode = st.radio("검색 방식 선택", ["📝 회사명 검색 (자동완성)", "⌨️ 티커 직접 입력"], horizontal=True)
 
-    search_name, final_ticker = None, None
-    if "이름" in search_mode:
-        search_name = st.selectbox(
-            "한국 주식(한글) 및 미국 주식(영어) 검색", 
-            options=list(all_stocks_dict.keys()), 
-            index=None,
-            placeholder="예: 삼성전자, Apple, 카카오..."
-        )
-        if search_name: final_ticker = all_stocks_dict.get(search_name)
-    else:
-        search_name = st.text_input(
-            "티커를 입력하세요", 
-            placeholder="예: TQQQ, SOXL, 005930.KS"
-        )
-        if search_name: final_ticker = search_name.upper()
+search_name, final_ticker = None, None
+if "이름" in search_mode:
+    # 폭을 넓게 써서 구글처럼 아래로 시원하게 열리도록 복구
+    search_name = st.selectbox(
+        "한국 주식(한글) 및 미국 주식(영어)을 입력하면 아래로 목록이 나타납니다.", 
+        options=list(all_stocks_dict.keys()), 
+        index=None,
+        placeholder="🔍 검색어를 입력하세요 (예: 삼성전자, Apple, 카카오...)"
+    )
+    if search_name: final_ticker = all_stocks_dict.get(search_name)
+else:
+    search_name = st.text_input(
+        "티커를 직접 입력하고 엔터를 누르세요", 
+        placeholder="예: TQQQ, SOXL, 005930.KS"
+    )
+    if search_name: final_ticker = search_name.upper()
 
 # --- UI 섹션 3: 퀀트 엔진 및 백테스트 ---
 if final_ticker:
