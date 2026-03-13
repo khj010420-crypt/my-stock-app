@@ -12,7 +12,7 @@ st.markdown("""<style>.stMetric { background-color: #1e2130; padding: 15px; bord
 
 st.title("🏛️ Hysteresis 프로 퀀트 터미널")
 
-# 2. 전 세계 리스트 로드
+# 2. 전 세계 리스트 로드 (안전 수집)
 @st.cache_data(ttl=86400)
 def get_all_stock_list():
     master_dict = {}
@@ -74,37 +74,36 @@ else:
     search_name = st.text_input("티커를 입력하세요 (예: TQQQ, 035720.KS)")
     if search_name: final_ticker = search_name.upper()
 
-# 5. 퀀트 엔진 및 백테스트 (래리 코너스 전략 적용)
+# 5. 퀀트 엔진 및 백테스트 (스윙 최적화)
 if final_ticker:
     with st.spinner(f'[{search_name}] 퀀트 연산을 수행 중입니다...'):
         end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=365*6) # MA200 계산을 위해 6년치 로드
+        start_date = end_date - timedelta(days=365*5 + 100) # MA60 계산을 위한 여유분
         
         stock_df = yf.download(final_ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
         
-        if not stock_df.empty and len(stock_df) > 250:
+        if not stock_df.empty and len(stock_df) > 100:
             if isinstance(stock_df.columns, pd.MultiIndex): stock_df.columns = stock_df.columns.get_level_values(0)
             stock_df.index = stock_df.index.tz_localize(None)
             
             combined_df = stock_df.copy()
             
             # 1. 기술적 지표 연산
-            combined_df['MA200'] = combined_df['Close'].rolling(200).mean() # 장기 추세선
-            combined_df['MA10'] = combined_df['Close'].rolling(10).mean()   # 단기 청산선
+            combined_df['MA60'] = combined_df['Close'].rolling(60).mean()   # 중기 수급선
             
             delta = combined_df['Close'].diff()
             up, down = delta.clip(lower=0), -1 * delta.clip(upper=0)
             ema_up, ema_down = up.ewm(com=13, adjust=False).mean(), down.ewm(com=13, adjust=False).mean()
             combined_df['RSI'] = 100 - (100 / (1 + (ema_up / ema_down)))
             
-            # 최근 5년치 데이터만 필터링 (초기 200일 MA 계산을 위한 더미데이터 제거)
-            combined_df = combined_df.iloc[200:].copy()
+            # 최근 5년치 데이터만 필터링 (초기 60일 MA 더미 제거)
+            combined_df = combined_df.iloc[60:].copy()
 
-            # 2. 거래 로직 (상승장 눌림목 퀀트 모델)
-            # 매수 조건: 종가가 200일선 위에 있음 (장기 상승장) AND RSI가 40 미만 (단기 과매도/눌림목)
-            buy_signal = (combined_df['Close'] > combined_df['MA200']) & (combined_df['RSI'] < 40)
-            # 익절/청산 조건: 종가가 단기 10일선 위로 올라오면 수익 실현
-            sell_signal = combined_df['Close'] > combined_df['MA10']
+            # 2. 거래 로직 (중기 스윙 트레이딩)
+            # 매수: 60일선 위(상승세) AND RSI 45 미만(가벼운 눌림목)
+            buy_signal = (combined_df['Close'] > combined_df['MA60']) & (combined_df['RSI'] < 45)
+            # 매도: RSI 65 초과(단기 과열 익절) OR 60일선 하향 이탈(추세 깨짐 손절)
+            sell_signal = (combined_df['RSI'] > 65) | (combined_df['Close'] < combined_df['MA60'])
             
             position = np.zeros(len(combined_df))
             current_pos = 0
@@ -113,16 +112,16 @@ if final_ticker:
                 if buy_signal.iloc[i]:
                     current_pos = 1 # 매수
                 elif sell_signal.iloc[i]:
-                    current_pos = 0 # 매도 (청산)
+                    current_pos = 0 # 매도
                 position[i] = current_pos
                 
             combined_df['Target_Position'] = position
-            combined_df['Position'] = combined_df['Target_Position'].shift(1).fillna(0) # 신호 발생 다음 날 매매
+            combined_df['Position'] = combined_df['Target_Position'].shift(1).fillna(0)
             
-            # 3. 수익률 및 수수료 차감
+            # 3. 수익률 및 수수료 차감 (왕복 0.3% 현실적용)
             combined_df['Daily_Return'] = combined_df['Close'].pct_change()
             combined_df['Turnover'] = np.abs(combined_df['Position'] - combined_df['Position'].shift(1).fillna(0))
-            trading_cost = 0.002 # 매매 수수료 및 슬리피지 0.2%
+            trading_cost = 0.0015 # 1회 거래당 수수료+세금 0.15% (매수+매도 왕복 0.3%)
             
             combined_df['Strategy_Return'] = (combined_df['Position'] * combined_df['Daily_Return']) - (combined_df['Turnover'] * trading_cost)
             
@@ -130,13 +129,12 @@ if final_ticker:
             combined_df['Cum_Strategy'] = (1 + combined_df['Strategy_Return']).cumprod() * 100
 
             # --- 결과 시각화 ---
-            total_trades = combined_df['Turnover'].sum() / 2 # 왕복 기준 매매 횟수
-            current_rsi = combined_df['RSI'].iloc[-1]
-            trend_status = "상승 추세 (안전)" if combined_df['Close'].iloc[-1] > combined_df['MA200'].iloc[-1] else "하락 추세 (위험)"
+            total_trades = combined_df['Turnover'].sum() / 2
+            trend_status = "상승 추세" if combined_df['Close'].iloc[-1] > combined_df['MA60'].iloc[-1] else "하락/조정"
             
             st.markdown("---")
-            st.markdown(f"## 📊 5년 시뮬레이션: 상승장 눌림목(Buy-the-Dip) 전략")
-            st.caption(f"✔️ MA200 돌파 시에만 매매 / ✔️ RSI 40 이하 매수 / ✔️ MA10 돌파 시 익절 / ✔️ 왕복 매매 시 수수료 0.4% 차감")
+            st.markdown(f"## 📊 5년 시뮬레이션: 중기 스윙(Swing) 전략")
+            st.caption(f"✔️ 진입: 60일선 위 & RSI 45 이하 | ✔️ 청산: RSI 65 돌파 또는 60일선 이탈 | ✔️ 1회 매매당 0.15% 제세금 차감")
             
             final_bh = combined_df['Cum_BuyHold'].iloc[-1] - 100
             final_st = combined_df['Cum_Strategy'].iloc[-1] - 100
@@ -145,14 +143,14 @@ if final_ticker:
             col1.metric("5년 존버 수익률", f"{final_bh:+.1f} %")
             col2.metric("전략 수익률 (비용차감)", f"{final_st:+.1f} %", delta=f"{final_st - final_bh:.1f}%p (초과 수익)")
             col3.metric("5년간 총 매매 횟수", f"{int(total_trades)} 회")
-            col4.metric("현재 장기 추세", f"{trend_status}")
+            col4.metric("현재 기술적 추세", f"{trend_status}")
 
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=combined_df.index, y=combined_df['Cum_BuyHold'], name="단순 보유 (존버)", line=dict(color='gray', width=1.5)))
-            fig.add_trace(go.Scatter(x=combined_df.index, y=combined_df['Cum_Strategy'], name="눌림목 전략 수익률", line=dict(color='#00FF00', width=2.5)))
+            fig.add_trace(go.Scatter(x=combined_df.index, y=combined_df['Cum_Strategy'], name="스윙 전략 수익률", line=dict(color='#00FF00', width=2.5)))
             
             fig.update_layout(template="plotly_dark", title=f"자산 성장 곡선 (초기 자본금 = 100 기준)", height=550)
             st.plotly_chart(fig, use_container_width=True)
             
         else:
-            st.warning("데이터가 부족합니다. 최소 250일 이상 상장된 종목이어야 장기 추세 분석이 가능합니다.")
+            st.warning("데이터가 부족합니다. 최소 100일 이상 상장된 종목이어야 분석이 가능합니다.")
