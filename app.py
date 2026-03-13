@@ -4,8 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import requests
-import io
+import FinanceDataReader as fdr  # 한국 주식 전용 라이브러리 추가
 
 # 1. 페이지 설정
 st.set_page_config(page_title="Hysteresis Stock Intelligence", layout="wide")
@@ -17,27 +16,25 @@ st.markdown("""
 
 st.title("🏛️ Hysteresis 통합 주식 분석 대시보드")
 
-# 2. 데이터 로드: 한국 종목 리스트 완벽 수집 (보안 우회 및 코스닥 분리)
+# 2. 데이터 로드: 한국 종목 리스트 완벽 수집 (FinanceDataReader 사용)
 @st.cache_data(ttl=86400)
 def get_kr_stock_list():
-    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # 코스피(KOSPI) 수집
-        url_kospi = 'https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&marketType=stockMkt'
-        res_kospi = requests.get(url_kospi, headers=headers)
-        df_kospi = pd.read_html(io.StringIO(res_kospi.text), header=0)[0]
-        df_kospi['종목코드'] = df_kospi['종목코드'].astype(str).str.zfill(6) + '.KS'
+        # KRX (코스피, 코스닥) 전체 종목 가져오기
+        df = fdr.StockListing('KRX')
         
-        # 코스닥(KOSDAQ) 수집
-        url_kosdaq = 'https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&marketType=kosdaqMkt'
-        res_kosdaq = requests.get(url_kosdaq, headers=headers)
-        df_kosdaq = pd.read_html(io.StringIO(res_kosdaq.text), header=0)[0]
-        df_kosdaq['종목코드'] = df_kosdaq['종목코드'].astype(str).str.zfill(6) + '.KQ'
-        
-        df = pd.concat([df_kospi, df_kosdaq])
-        return dict(zip(df['회사명'], df['종목코드']))
+        # yfinance 검색을 위해 티커에 .KS(코스피), .KQ(코스닥) 붙이기
+        def make_ticker(row):
+            if row['Market'] == 'KOSPI': return f"{row['Code']}.KS"
+            elif row['Market'] == 'KOSDAQ': return f"{row['Code']}.KQ"
+            else: return f"{row['Code']}.KS"
+            
+        df['Ticker'] = df.apply(make_ticker, axis=1)
+        # 회사명과 티커를 딕셔너리 형태로 묶음
+        return dict(zip(df['Name'], df['Ticker']))
     except Exception as e:
-        return {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS"} # 예외 시 기본값
+        st.error("종목 리스트를 불러오는데 실패했습니다.")
+        return {"삼성전자": "005930.KS"} 
 
 kr_stocks_dict = get_kr_stock_list()
 
@@ -82,14 +79,14 @@ search_mode = st.radio("검색 방식 선택", ["📝 한국 주식 이름으로
 search_name = None
 final_ticker = None
 
-# 모드 1: 한글 자동완성 (2,500개 + 나스닥 TOP 10)
+# 모드 1: 한글 자동완성 (한국 2,700여개 + 나스닥 TOP 10)
 if "이름" in search_mode:
     search_options = list(kr_stocks_dict.keys()) + list(NASDAQ_TOP.keys())
-    search_name = st.selectbox("종목명을 입력하세요", options=search_options, index=None, placeholder="예: 삼성전자, 카카오, 애플...")
+    search_name = st.selectbox("종목명을 입력하세요", options=search_options, index=None, placeholder="예: 에코프로, 카카오, 애플...")
     if search_name:
         final_ticker = kr_stocks_dict.get(search_name) or NASDAQ_TOP.get(search_name)
 
-# 모드 2: 무제한 티커 입력 (해외 잡주까지 모두 가능)
+# 모드 2: 무제한 티커 입력 (해외 주식)
 else:
     search_name = st.text_input("티커(Ticker)를 입력하고 엔터를 누르세요 (예: AMD, SOXL, 035720.KS)")
     if search_name:
@@ -97,20 +94,19 @@ else:
 
 # --- 분석 엔진 ---
 if final_ticker:
-    with st.spinner(f'[{search_name}] 5년치 데이터를 수집 및 분석 중입니다...'):
+    with st.spinner(f'[{search_name}] 데이터를 수집 및 분석 중입니다...'):
         end_date = datetime.now().date()
         start_date = end_date - timedelta(days=365*5)
         
-        # 종목 성격에 따라 비교할 시장 지수 완벽 매칭
-        if final_ticker.endswith(".KS"): market_index = "^KS11" # 코스피
-        elif final_ticker.endswith(".KQ"): market_index = "^KQ11" # 코스닥
-        else: market_index = "^IXIC" # 미국 등 해외
+        # 지수 판별
+        if final_ticker.endswith(".KS"): market_index = "^KS11"
+        elif final_ticker.endswith(".KQ"): market_index = "^KQ11"
+        else: market_index = "^IXIC"
         
         stock_df = yf.download(final_ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
         market_df = yf.download(market_index, start=start_date, end=end_date, auto_adjust=True, progress=False)
         
-        if not stock_df.empty and not market_df.empty:
-            # MultiIndex 오류 및 시차 오류 제거
+        if not stock_df.empty and len(stock_df) > 50: # 상장된지 최소 50일 이상된 종목만
             if isinstance(stock_df.columns, pd.MultiIndex): stock_df.columns = stock_df.columns.get_level_values(0)
             if isinstance(market_df.columns, pd.MultiIndex): market_df.columns = market_df.columns.get_level_values(0)
             stock_df.index = stock_df.index.tz_localize(None)
@@ -151,4 +147,4 @@ if final_ticker:
             else:
                 st.error("종목과 시장 지수의 날짜를 매칭할 수 없습니다.")
         else:
-            st.error("데이터 로드 실패: 티커를 잘못 입력하셨거나 휴장일 영향일 수 있습니다.")
+            st.warning("데이터가 없거나 상장된 지 얼마 안 된 종목이라 5년치 통계 분석이 어렵습니다.")
