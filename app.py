@@ -13,22 +13,29 @@ st.markdown("""<style>.stMetric { background-color: #1e2130; padding: 15px; bord
 st.title("🏛️ Hysteresis 프로 퀀트 터미널")
 st.caption("시가총액 상위 전광판 + 다중 팩터/비용 차감/전진 분석이 적용된 실무형 백테스트 엔진")
 
-# 2. 전 세계 리스트 로드 (검색용)
+# 2. 전 세계 리스트 로드 (검색용, 총 7,200여 개)
 @st.cache_data(ttl=86400)
 def get_all_stock_list():
-    try:
-        df_kr = fdr.StockListing('KRX')
-        df_kr['Ticker'] = df_kr.apply(lambda r: f"{r['Code']}.KS" if r['Market']=='KOSPI' else f"{r['Code']}.KQ", axis=1)
-        master_dict = dict(zip(df_kr['Name'], df_kr['Ticker']))
-        
-        df_ndaq = fdr.StockListing('NASDAQ')
-        master_dict.update(dict(zip(df_ndaq['Name'] + " (NASDAQ)", df_ndaq['Symbol'])))
-        
-        custom_us = {"애플":"AAPL", "테슬라":"TSLA", "엔비디아":"NVDA", "마이크로소프트":"MSFT", "알파벳(구글)":"GOOGL", "아마존":"AMZN", "메타":"META", "인텔":"INTC", "AMD":"AMD", "SOXL":"SOXL", "TQQQ":"TQQQ"}
-        master_dict.update(custom_us)
-        return master_dict
-    except:
-        return {"삼성전자": "005930.KS", "테슬라": "TSLA"}
+    master_dict = {}
+    
+    # 1. 한국 주식
+    df_kr = fdr.StockListing('KRX')
+    df_kr['Ticker'] = df_kr.apply(lambda r: f"{r['Code']}.KS" if r['Market']=='KOSPI' else f"{r['Code']}.KQ", axis=1)
+    master_dict.update(dict(zip(df_kr['Name'], df_kr['Ticker'])))
+    
+    # 2. 미국 나스닥
+    df_ndaq = fdr.StockListing('NASDAQ')
+    master_dict.update(dict(zip(df_ndaq['Name'] + " (NASDAQ)", df_ndaq['Symbol'])))
+    
+    # 3. 미국 S&P500 (누락되었던 부분 복구)
+    df_sp = fdr.StockListing('S&P500')
+    master_dict.update(dict(zip(df_sp['Name'] + " (S&P500)", df_sp['Symbol'])))
+    
+    # 4. 필수 한글 매핑
+    custom_us = {"애플":"AAPL", "테슬라":"TSLA", "엔비디아":"NVDA", "마이크로소프트":"MSFT", "알파벳(구글)":"GOOGL", "아마존":"AMZN", "메타":"META", "인텔":"INTC", "AMD":"AMD", "SOXL":"SOXL", "TQQQ":"TQQQ"}
+    master_dict.update(custom_us)
+    
+    return master_dict
 
 all_stocks_dict = get_all_stock_list()
 
@@ -65,17 +72,28 @@ with tab2:
 
 st.write("---")
 
-# --- UI 섹션 2: 만능 검색창 ---
+# --- UI 섹션 2: 만능 검색창 (디자인 롤백 완료) ---
 st.subheader("🔍 정밀 퀀트 분석 검색창")
-search_mode = st.radio("검색 방식 선택", ["📝 회사명 검색 (자동완성)", "⌨️ 티커 직접 입력"], horizontal=True)
 
-search_name, final_ticker = None, None
-if "이름" in search_mode:
-    search_name = st.selectbox("분석할 종목을 입력하세요 (한국어/영어)", options=list(all_stocks_dict.keys()), index=None)
-    if search_name: final_ticker = all_stocks_dict.get(search_name)
-else:
-    search_name = st.text_input("티커를 입력하세요 (예: TQQQ, SOXL, 005930.KS)")
-    if search_name: final_ticker = search_name.upper()
+col_search, _ = st.columns([1, 1]) # 가로 폭을 절반으로 줄여 검색창 느낌 복구
+with col_search:
+    search_mode = st.radio("검색 방식 선택", ["📝 회사명 검색 (자동완성)", "⌨️ 티커 직접 입력"], horizontal=True)
+
+    search_name, final_ticker = None, None
+    if "이름" in search_mode:
+        search_name = st.selectbox(
+            "한국 주식(한글) 및 미국 주식(영어) 검색", 
+            options=list(all_stocks_dict.keys()), 
+            index=None,
+            placeholder="예: 삼성전자, Apple, 카카오..."
+        )
+        if search_name: final_ticker = all_stocks_dict.get(search_name)
+    else:
+        search_name = st.text_input(
+            "티커를 입력하세요", 
+            placeholder="예: TQQQ, SOXL, 005930.KS"
+        )
+        if search_name: final_ticker = search_name.upper()
 
 # --- UI 섹션 3: 퀀트 엔진 및 백테스트 ---
 if final_ticker:
@@ -94,7 +112,6 @@ if final_ticker:
             
             combined_df = stock_df.join(market_df['Close'].rename('Close_market'), how='inner').dropna()
             
-            # [퀀트 지표 연산]
             delta = combined_df['Close'].diff()
             up, down = delta.clip(lower=0), -1 * delta.clip(upper=0)
             ema_up, ema_down = up.ewm(com=13, adjust=False).mean(), down.ewm(com=13, adjust=False).mean()
@@ -111,11 +128,9 @@ if final_ticker:
             combined_df['ATR_pct'] = combined_df['ATR'] / combined_df['Close']
             combined_df['Target_Weight'] = np.clip(0.02 / combined_df['ATR_pct'], 0, 1).fillna(0)
             
-            # [핵심 수정: 데이터를 쪼개기 전에 Target_Return과 RSI_round를 먼저 생성합니다]
             combined_df['Target_Return'] = combined_df['Close'].shift(-5) / combined_df['Close'] - 1
             combined_df['RSI_round'] = combined_df['RSI'].round()
 
-            # [전진 분석 (Walk-Forward)]
             split_idx = int(len(combined_df) * 0.7)
             train_df = combined_df.iloc[:split_idx]
             test_df = combined_df.iloc[split_idx:]
@@ -127,20 +142,18 @@ if final_ticker:
             combined_df['Market_Score'] = np.clip((combined_df['Close_market'] / combined_df['MA20_market'] - 1) * 500, -20, 20)
             combined_df['Final_Score'] = np.clip(((combined_df['Hist_Win_Rate'] - 0.5) * 160) + combined_df['Market_Score'], -100, 100)
 
-            # [매매 시뮬레이션 및 비용 차감]
             combined_df['Target_Position'] = np.where((combined_df['Final_Score'] > 30) & combined_df['Volume_Surge'], combined_df['Target_Weight'], 0)
             combined_df['Position'] = combined_df['Target_Position'].shift(1).fillna(0)
             
             combined_df['Daily_Return'] = combined_df['Close'].pct_change()
             combined_df['Turnover'] = np.abs(combined_df['Position'] - combined_df['Position'].shift(1).fillna(0))
-            trading_cost = 0.002 # 왕복 0.2% 차감
+            trading_cost = 0.002 
             
             combined_df['Strategy_Return'] = (combined_df['Position'] * combined_df['Daily_Return']) - (combined_df['Turnover'] * trading_cost)
             
             combined_df['Cum_BuyHold'] = (1 + combined_df['Daily_Return']).cumprod() * 100
             combined_df['Cum_Strategy'] = (1 + combined_df['Strategy_Return']).cumprod() * 100
 
-            # --- 결과 시각화 ---
             st.markdown(f"## 📊 {search_name} 퀀트 시뮬레이션 결과")
             st.caption("✔️ 다중 팩터(거래량) / ✔️ 1회당 0.2% 비용 차감 / ✔️ ATR 리스크 통제 / ✔️ OOS 검증")
             
@@ -156,7 +169,6 @@ if final_ticker:
             oos_strategy_return = (oos_df['Cum_Strategy'].iloc[-1] / oos_df['Cum_Strategy'].iloc[0] - 1) * 100
             col3.metric("최근 1.5년 (OOS 검증) 수익", f"{oos_strategy_return:+.1f} %")
 
-            # 백테스트 차트
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=combined_df.index, y=combined_df['Cum_BuyHold'], name="존버 전략 (비교군)", line=dict(color='gray', width=1.5)))
             fig.add_trace(go.Scatter(x=combined_df.index, y=combined_df['Cum_Strategy'], name="퀀트 전략 (실제 계좌)", line=dict(color='#00FF00', width=2.5)))
