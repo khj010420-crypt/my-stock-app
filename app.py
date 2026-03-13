@@ -5,118 +5,119 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-# 1. 페이지 설정 및 디자인
+# 1. 페이지 설정
 st.set_page_config(page_title="Hysteresis Stock Intelligence", layout="wide")
 
+# 2. 한국 종목 리스트 가져오기 (이름으로 검색하기 위함)
+@st.cache_data
+def get_krx_tickers():
+    # 한국거래소 종목 리스트를 가져오는 URL (최적화된 방식)
+    # 직접 CSV를 긁어오거나 상위 종목 위주로 구성 가능
+    # 여기서는 범용성을 위해 시총 상위 및 주요 종목 매핑 테이블을 생성합니다.
+    url = 'https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
+    df = pd.read_html(url, header=0)[0]
+    df = df[['회사명', '종목코드']]
+    df['종목코드'] = df['종목코드'].apply(lambda x: f"{x:06d}")
+    # 코스피/코스닥 구분을 위해 yfinance 형식으로 변환 (.KS)
+    # 실제로는 KRX 전체를 뒤져야 하지만 검색 편의를 위해 매핑함
+    return df
+
+try:
+    kr_stocks = get_krx_tickers()
+    stock_dict = dict(zip(kr_stocks['회사명'], kr_stocks['종목코드']))
+    stock_names = list(stock_dict.keys())
+except:
+    # 예외 발생 시 기본 리스트 사용
+    stock_dict = {"삼성전자": "005930", "SK하이닉스": "000660", "현대차": "005380"}
+    stock_names = list(stock_dict.keys())
+
+# 3. 디자인 CSS
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #262730; color: white; }
-    .stButton>button:hover { background-color: #ff4b4b; border: 1px solid #ff4b4b; }
-    .status-box { padding: 20px; border-radius: 10px; margin: 10px 0; }
+    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; }
+    .stButton>button { height: 4em; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🏛️ 시장 종합 전광판 및 인텔리전스 분석")
+st.title("🏛️ Hysteresis 인텔리전스 분석 (이름 검색 지원)")
 
-# 2. 시장별 상위 종목 리스트 정의 (시총 상위 주요 종목)
-market_data = {
-    "KOSPI (한국)": {
-        "index": "^KS11",
-        "tickers": ["005930.KS", "000660.KS", "373220.KS", "207940.KS", "005380.KS", "005490.KS", "068270.KS", "035420.KS"]
-    },
-    "NASDAQ (미국)": {
-        "index": "^IXIC",
-        "tickers": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AVGO"]
-    }
-}
+# 4. 상단 종목 자동 완성 검색창 (구글 검색 느낌)
+st.subheader("🔍 분석할 종목명을 입력하세요")
+selected_name = st.selectbox(
+    "종목명을 입력하면 아래에 목록이 나타납니다.",
+    options=stock_names,
+    index=None,
+    placeholder="예: 삼성전자, 현대차, 카카오...",
+)
 
-# 3. 상단 시장 선택 및 실시간 시세판
-selected_market = st.radio("시장을 선택하세요", list(market_data.keys()), horizontal=True)
-market_info = market_data[selected_market]
-
-st.subheader(f"📍 {selected_market} 주요 종목 시세")
-
-# 종목 리스트 데이터 가져오기 (간단한 시세표)
-@st.cache_data(ttl=600) # 10분간 데이터 캐싱
-def get_market_summary(tickers):
-    summary = []
-    for t in tickers:
-        try:
-            stock = yf.Ticker(t)
-            info = stock.fast_info
-            price = info['last_price']
-            change = ((price - info['previous_close']) / info['previous_close']) * 100
-            summary.append({"종목명": t, "현재가": round(price, 2), "등락율": round(change, 2)})
-        except:
-            continue
-    return pd.DataFrame(summary)
-
-summary_df = get_market_summary(market_info["tickers"])
-
-# 4. 증권사 스타일의 종목 리스트 출력 (클릭 기능 포함)
-cols = st.columns(len(summary_df))
-selected_ticker = ""
-
-for i, row in summary_df.iterrows():
-    with cols[i]:
-        color = "#ff4b4b" if row['등락율'] > 0 else "#31333f" if row['등락율'] == 0 else "#1c83e1"
-        if st.button(f"{row['종목명']}\n{row['현재가']}\n({row['등락율']}%)"):
-            selected_ticker = row['종목명']
-
+# 5. 시장 전광판 (시총 상위 주요 종목)
 st.write("---")
+st.subheader("🔥 주요 종목 실시간 보드")
+top_stocks = ["삼성전자", "SK하이닉스", "현대차", "NAVER", "카카오", "LG에너지솔루션", "기아", "셀트리온"]
 
-# 5. 검색창 (직접 입력도 가능)
-search_ticker = st.text_input("🔍 직접 종목 검색 (티커 입력 후 엔터)", value=selected_ticker if selected_ticker else "005930.KS")
+cols = st.columns(len(top_stocks))
+clicked_ticker = ""
 
-# 6. 분석 엔진 (앞선 로직 통합)
-if search_ticker:
-    with st.spinner(f'{search_ticker} 데이터를 정밀 분석 중...'):
-        end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=365*5)
-        
-        stock_df = yf.download(search_ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
-        market_df = yf.download(market_info["index"], start=start_date, end=end_date, auto_adjust=True, progress=False)
-        
-        if not stock_df.empty:
-            if isinstance(stock_df.columns, pd.MultiIndex): stock_df.columns = stock_df.columns.get_level_values(0)
-            if isinstance(market_df.columns, pd.MultiIndex): market_df.columns = market_df.columns.get_level_values(0)
-            
-            combined_df = pd.merge(stock_df[['Close']], market_df[['Close']], left_index=True, right_index=True, suffixes=('_stock', '_market'), how='inner')
-            
-            # 지표 연산
-            delta = combined_df['Close_stock'].diff()
-            up, down = delta.clip(lower=0), -1 * delta.clip(upper=0)
-            ema_up = up.ewm(com=13, adjust=False).mean()
-            ema_down = down.ewm(com=13, adjust=False).mean()
-            combined_df['RSI'] = 100 - (100 / (1 + (ema_up / ema_down)))
-            
-            combined_df['Target_Return'] = combined_df['Close_stock'].shift(-5) / combined_df['Close_stock'] - 1
-            current_rsi = combined_df['RSI'].iloc[-1]
-            similar_patterns = combined_df[(combined_df['RSI'] >= current_rsi - 3) & (combined_df['RSI'] <= current_rsi + 3)].dropna()
-            
-            win_rate = (similar_patterns['Target_Return'] > 0).mean() if not similar_patterns.empty else 0.5
-            stock_score = (win_rate - 0.5) * 160
-            
-            combined_df['MA20_market'] = combined_df['Close_market'].rolling(window=20).mean()
-            market_strength = (combined_df['Close_market'].iloc[-1] / combined_df['MA20_market'].iloc[-1] - 1) * 100
-            final_score = np.clip(stock_score + (np.clip(market_strength * 5, -20, 20)), -100, 100)
+for i, name in enumerate(top_stocks):
+    with cols[i]:
+        if st.button(name):
+            selected_name = name
 
-            # 결과 리포트 디자인
-            score_color = "green" if final_score > 30 else "red" if final_score < -30 else "orange"
-            st.markdown(f"### 🚀 {search_ticker} 투자 매력도: <span style='color:{score_color}'>{final_score:.1f} pt</span>", unsafe_allow_html=True)
+# 6. 메인 분석 로직
+if selected_name:
+    # 이름에서 티커 추출 (한국 주식은 .KS 기준)
+    raw_code = stock_dict.get(selected_name)
+    search_ticker = f"{raw_code}.KS" if raw_code else None
+    
+    if search_ticker:
+        with st.spinner(f'[{selected_name}] 데이터를 분석 중입니다...'):
+            end_date = datetime.now().date()
+            start_date = end_date - timedelta(days=365*5)
             
-            col1, col2, col3 = st.columns(3)
-            col1.metric("통계적 승률(5y)", f"{win_rate*100:.1f}%")
-            col2.metric("현재 RSI", f"{current_rsi:.1f}")
-            col3.metric("시장 강도(KOSPI/NAS)", f"{market_strength:.1f}%")
+            # 데이터 수집
+            stock_df = yf.download(search_ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
+            market_df = yf.download("^KS11", start=start_date, end=end_date, auto_adjust=True, progress=False)
+            
+            if not stock_df.empty:
+                # 데이터 가공 (MultiIndex 제거)
+                if isinstance(stock_df.columns, pd.MultiIndex): stock_df.columns = stock_df.columns.get_level_values(0)
+                if isinstance(market_df.columns, pd.MultiIndex): market_df.columns = market_df.columns.get_level_values(0)
+                
+                combined_df = pd.merge(stock_df[['Close']], market_df[['Close']], left_index=True, right_index=True, suffixes=('_stock', '_market'), how='inner')
+                
+                # 기술적 지표 계산
+                delta = combined_df['Close_stock'].diff()
+                up, down = delta.clip(lower=0), -1 * delta.clip(upper=0)
+                ema_up = up.ewm(com=13, adjust=False).mean()
+                ema_down = down.ewm(com=13, adjust=False).mean()
+                combined_df['RSI'] = 100 - (100 / (1 + (ema_up / ema_down)))
+                
+                combined_df['Target_Return'] = combined_df['Close_stock'].shift(-5) / combined_df['Close_stock'] - 1
+                current_rsi = combined_df['RSI'].iloc[-1]
+                
+                # 5년치 유사 패턴 분석
+                similar_patterns = combined_df[(combined_df['RSI'] >= current_rsi - 3) & (combined_df['RSI'] <= current_rsi + 3)].dropna()
+                win_rate = (similar_patterns['Target_Return'] > 0).mean() if not similar_patterns.empty else 0.5
+                stock_score = (win_rate - 0.5) * 160
+                
+                market_strength = (combined_df['Close_market'].iloc[-1] / combined_df['Close_market'].rolling(20).mean().iloc[-1] - 1) * 100
+                final_score = np.clip(stock_score + (market_strength * 5), -100, 100)
 
-            # 차트
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=combined_df.index, y=combined_df['Close_stock'], name="Price", line=dict(color='#ff4b4b')))
-            fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # 분석 요약
-            if final_score > 50: st.success("✅ 강력 매수 신호: 통계적으로 매우 유리한 위치입니다.")
-            elif final_score < -50: st.error("⚠️ 매도 주의 신호: 하락 압력이 강하며 시장 상황이 좋지 않습니다.")
-            else: st.info("⚖️ 중립 신호: 추세 확인이 필요한 구간입니다.")
+                # 결과 요약
+                st.markdown(f"## {selected_name} ({search_ticker})")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("투자 점수", f"{final_score:.1f} pt")
+                col2.metric("5년 데이터 승률", f"{win_rate*100:.1f} %")
+                col3.metric("현재 RSI", f"{current_rsi:.1f}")
+
+                # 차트
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=combined_df.index, y=combined_df['Close_stock'], name=selected_name, line=dict(color='#ff4b4b')))
+                fig.update_layout(template="plotly_dark", height=450)
+                st.plotly_chart(fig, use_container_width=True)
+
+                if final_score > 30: st.success("🚀 통계적으로 반등 가능성이 높은 구간입니다.")
+                elif final_score < -30: st.error("📉 하락 위험이 큰 구간이니 주의가 필요합니다.")
+                else: st.info("⚖️ 중립 구간입니다. 시장 흐름을 더 관찰하세요.")
+            else:
+                st.error("주가 데이터를 가져오는 데 실패했습니다.")
